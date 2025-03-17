@@ -1,0 +1,7 @@
+Date	11/7/2024	
+Time	10:20 AM	
+Total scan duration	1	min
+Total no. of scans	60	
+Int. Time	1000	ms
+Averaging	1	
+Smoothing	1	

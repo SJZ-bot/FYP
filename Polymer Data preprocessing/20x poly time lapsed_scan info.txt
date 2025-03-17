@@ -1,0 +1,7 @@
+Date	11/7/2024	
+Time	10:19 AM	
+No. of Scans	50	
+Time Lapsed Interval	0.500	s
+Int. Time	1000	ms
+Averaging	1	
+Smoothing	1	
