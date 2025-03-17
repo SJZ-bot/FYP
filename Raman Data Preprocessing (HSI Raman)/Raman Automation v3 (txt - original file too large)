@@ -1,0 +1,355 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+
+df = pd.read_csv('C:/Users/SPHERES/Downloads/hBN-map4.csv')
+
+df = df.dropna(how='all')
+
+df = df[~df.apply(lambda row: row.astype(str).str.contains(r'^Frame \d+', regex=True).any(), axis=1)]
+
+df
+
+df[['Wavenumber', 'Intensity']] = df['Frame 1'].str.split('\t', expand=True)
+
+df
+
+df[['Wavenumber', 'Intensity']] = df[['Wavenumber', 'Intensity']].apply(pd.to_numeric, errors='coerce')
+
+len(df)
+
+def remove_cosmic_points(dataframe, threshold_factor=0.07):
+
+    dataframe = dataframe.copy()
+    dataframe = dataframe[::-1].reset_index(drop=True) 
+    
+    rows_to_drop = []
+    
+    for i in range(1, len(dataframe)):
+        if abs(dataframe["Intensity"].iloc[i] - dataframe["Intensity"].iloc[i - 1]) > 125: 
+            rows_to_drop.append(i) 
+            
+    dataframe = dataframe.drop(rows_to_drop)
+    
+    dataframe = dataframe[dataframe["Intensity"] >= 625]
+            
+    return dataframe
+
+df_subset = remove_cosmic_points(df[345*1340:346*1340+1]) 
+df_subset = remove_cosmic_points(df_subset)
+df_subset
+
+def gaussian(x, A, mu, sigma):
+    return A * np.exp(-(x - mu)**2 / (2 * sigma**2))
+
+def lorentzian(x, A, mu, gamma):
+    return A / (1 + ((x - mu) / gamma)**2)
+
+from scipy.optimize import curve_fit
+
+df_subset_LG = df_subset.copy()
+
+p0_gaussian = [np.max(df_subset_LG['Intensity']), np.mean(df_subset_LG['Wavenumber']), 1]
+p0_lorentzian = [np.max(df_subset_LG['Intensity']), np.mean(df_subset_LG['Wavenumber']), 1]
+
+bounds = ([0, min(df_subset_LG['Wavenumber']), 0], [np.inf, max(df_subset_LG['Wavenumber']), np.inf])
+
+params_gaussian, _ = curve_fit(gaussian, df_subset_LG['Wavenumber'], df_subset_LG['Intensity'], p0=p0_gaussian, bounds=bounds, maxfev=10000)
+
+params_lorentzian, _ = curve_fit(lorentzian, df_subset_LG['Wavenumber'], df_subset_LG['Intensity'], p0=p0_lorentzian, bounds=bounds, maxfev=10000)
+
+fitted_baseline_gaussian = gaussian(df_subset_LG['Wavenumber'], *params_gaussian)
+fitted_baseline_lorentzian = lorentzian(df_subset_LG['Wavenumber'], *params_lorentzian)
+
+df_subset_LG.loc[:, 'Corrected_Intensity_Gaussian'] = df_subset_LG['Intensity'] - fitted_baseline_gaussian
+df_subset_LG.loc[:, 'Corrected_Intensity_Lorentzian'] = df_subset_LG['Intensity'] - fitted_baseline_lorentzian
+
+fig, axes = plt.subplots(1, 2, figsize=(25, 15))
+
+axes[0].plot(df_subset_LG['Wavenumber'], df_subset_LG['Corrected_Intensity_Gaussian'], color='blue', label='Corrected Spectrum (Gaussian)')
+axes[0].plot(df_subset_LG['Wavenumber'], fitted_baseline_gaussian, color='red', linestyle='--', label='Fitted Baseline (Gaussian)')
+axes[0].set_xlabel('Wavenumber')
+axes[0].set_ylabel('Corrected Intensity')
+axes[0].legend()
+axes[0].axhline(0, color='black', linestyle='--')
+axes[0].set_title('Gaussian Fitting')
+
+axes[1].plot(df_subset_LG['Wavenumber'], df_subset_LG['Corrected_Intensity_Lorentzian'], color='green', label='Corrected Spectrum (Lorentzian)')
+axes[1].plot(df_subset_LG['Wavenumber'], fitted_baseline_lorentzian, color='orange', linestyle='--', label='Fitted Baseline (Lorentzian)')
+axes[1].set_xlabel('Wavenumber')
+axes[1].set_ylabel('Corrected Intensity')
+axes[1].legend()
+axes[1].axhline(0, color='black', linestyle='--')
+axes[1].set_title('Lorentzian Fitting')
+
+plt.tight_layout()
+plt.show()
+
+from scipy.special import wofz
+
+def voigt(x, A, mu, sigma, gamma):
+    z = ((x - mu) + 1j * gamma) / (sigma * np.sqrt(2))  
+    return A * np.real(wofz(z))  
+
+def gl_mixed(x, A, mu, sigma, gamma, alpha):
+    gaussian = A * np.exp(-(x - mu)**2 / (2 * sigma**2))
+    lorentzian = A / (1 + ((x - mu) / gamma)**2)
+    return (1 - alpha) * gaussian + alpha * lorentzian
+
+df_subset_VGL = df_subset.copy()
+
+p0_voigt = [np.max(df_subset_VGL['Intensity']), np.mean(df_subset_VGL['Wavenumber']), 1, 1]
+p0_gl_mixed = [np.max(df_subset_VGL['Intensity']), np.mean(df_subset_VGL['Wavenumber']), 1, 1, 0.5]
+
+bounds_voigt = ([0, min(df_subset_VGL['Wavenumber']), 0, 0], [np.inf, max(df_subset_VGL['Wavenumber']), np.inf, np.inf])
+bounds_gl_mixed = ([0, min(df_subset_VGL['Wavenumber']), 0, 0, 0], [np.inf, max(df_subset_VGL['Wavenumber']), np.inf, np.inf, 1])
+
+params_voigt, _ = curve_fit(voigt, df_subset_VGL['Wavenumber'], df_subset_VGL['Intensity'], p0=p0_voigt, bounds=bounds_voigt, maxfev=10000)
+
+params_gl_mixed, _ = curve_fit(gl_mixed, df_subset_VGL['Wavenumber'], df_subset_VGL['Intensity'], p0=p0_gl_mixed, bounds=bounds_gl_mixed, maxfev=10000)
+
+fitted_baseline_voigt = voigt(df_subset_VGL['Wavenumber'], *params_voigt)
+fitted_baseline_gl_mixed = gl_mixed(df_subset_VGL['Wavenumber'], *params_gl_mixed)
+
+df_subset_VGL.loc[:, 'Corrected_Intensity_Voigt'] = df_subset_VGL['Intensity'] - fitted_baseline_voigt
+df_subset_VGL.loc[:, 'Corrected_Intensity_GL_Mixed'] = df_subset_VGL['Intensity'] - fitted_baseline_gl_mixed
+
+fig, axes = plt.subplots(1, 2, figsize=(25, 15))
+
+axes[0].plot(df_subset_VGL['Wavenumber'], df_subset_VGL['Corrected_Intensity_Voigt'], color='blue', label='Corrected Spectrum (Voigt)')
+axes[0].plot(df_subset_VGL['Wavenumber'], fitted_baseline_voigt, color='red', linestyle='--', label='Fitted Baseline (Voigt)')
+axes[0].set_xlabel('Wavenumber')
+axes[0].set_ylabel('Corrected Intensity')
+axes[0].legend()
+axes[0].axhline(0, color='black', linestyle='--')
+axes[0].set_title('Voigt Fitting')
+
+axes[1].plot(df_subset_VGL['Wavenumber'], df_subset_VGL['Corrected_Intensity_GL_Mixed'], color='green', label='Corrected Spectrum (G-L Mixed)')
+axes[1].plot(df_subset_VGL['Wavenumber'], fitted_baseline_gl_mixed, color='orange', linestyle='--', label='Fitted Baseline (G-L Mixed)')
+axes[1].set_xlabel('Wavenumber')
+axes[1].set_ylabel('Corrected Intensity')
+axes[1].legend()
+axes[1].axhline(0, color='black', linestyle='--')
+axes[1].set_title('G-L Mixed Fitting')
+
+plt.tight_layout()
+plt.show()
+
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.linear_model import LinearRegression
+
+poly = PolynomialFeatures(degree=3)  
+X_poly = poly.fit_transform(df_subset['Wavenumber'].values.reshape(-1, 1))
+
+model = LinearRegression()
+model.fit(X_poly, df_subset['Intensity'])
+baseline = model.predict(X_poly)
+
+df_subset['Corrected_Intensity'] = df_subset['Intensity'] - baseline
+
+ymin = -100
+ymax = df['Intensity'].max() - 8000
+
+plt.figure(figsize=(25, 15))
+plt.plot(df_subset['Wavenumber'], df_subset['Corrected_Intensity'], color='blue', label='Corrected Raman Spectrum')
+plt.ylim(ymin, ymax)
+plt.axhline(0, color='black', linestyle='--')
+plt.xlabel('Wavenumber')
+plt.ylabel('Corrected Intensity')
+plt.legend()
+plt.show()
+
+from scipy.integrate import trapz
+
+def calculate_fwhm(wavenumbers, intensities):
+
+    half_max = np.max(intensities) / 2
+
+    above_half_max = np.where(intensities >= half_max)[0]
+
+    if len(above_half_max) > 1:
+        fwhm = wavenumbers.iloc[above_half_max[-1]] - wavenumbers.iloc[above_half_max[0]]
+    else:
+        fwhm = 0
+
+    return fwhm
+
+import math
+
+data_points = 1340
+num_frames = len(df) / data_points
+
+if num_frames.is_integer():
+    num_frames = int(num_frames)  
+else:
+    print("num_frames is not a whole number")
+
+plt.figure(figsize=(25, 15))
+
+for i in range(num_frames):
+    df_iter_subset1 = df.iloc[i * data_points:(i + 1) * data_points]
+    df_iter_subset1 = remove_cosmic_points(df_iter_subset1)
+    df_iter_subset1 = remove_cosmic_points(df_iter_subset1)
+
+    poly = PolynomialFeatures(degree=3) 
+    X_poly = poly.fit_transform(df_iter_subset1['Wavenumber'].values.reshape(-1, 1))
+
+    model = LinearRegression()
+    model.fit(X_poly, df_iter_subset1['Intensity'])
+    baseline = model.predict(X_poly)
+
+    df_iter_subset1['Corrected_Intensity_Voigt'] = df_iter_subset1['Intensity'] - baseline
+    
+    plt.plot(df_iter_subset1['Wavenumber'], df_iter_subset1['Corrected_Intensity_Voigt'], 
+                label=f'Frame {i + 1}')  
+
+plt.title('Combined Scatter Plot')
+plt.xlabel('Wavenumber')
+plt.ylabel('Corrected_Intensity_Voigt')
+
+plt.legend(loc='upper right')
+
+plt.show()
+
+extracted_features = []
+
+for i in range(num_frames):
+    df_iter_subset2 = df.iloc[i * data_points:(i + 1) * data_points]
+    df_iter_subset2 = remove_cosmic_points(df_iter_subset2)
+    df_iter_subset2 = remove_cosmic_points(df_iter_subset2)
+
+    poly = PolynomialFeatures(degree=3) 
+    X_poly = poly.fit_transform(df_iter_subset2['Wavenumber'].values.reshape(-1, 1))
+
+    model = LinearRegression()
+    model.fit(X_poly, df_iter_subset2['Intensity'])
+    baseline = model.predict(X_poly)
+
+    df_iter_subset2['Corrected_Intensity_Voigt'] = df_iter_subset2['Intensity'] - baseline
+    
+    plt.figure(figsize=(25, 15))
+    
+    plt.scatter(df_iter_subset2['Wavenumber'], df_iter_subset2['Corrected_Intensity_Voigt'], color='blue', label=f'Frame {i + 1}')
+    
+    plt.title(f'Scatter Plot for Frame {i + 1}')
+    plt.xlabel('Wavenumber')
+    plt.ylabel('Corrected_Intensity_Voigt')
+    
+    ######## r2 < smt use linear fit (after applying gaussian)
+    
+    plt.legend()
+    
+    plt.show()
+    
+    max_intensity = np.max(df_iter_subset2['Corrected_Intensity_Voigt']) 
+    max_position = df_iter_subset2.loc[df_iter_subset2['Corrected_Intensity_Voigt'].idxmax(), 'Wavenumber']  
+    fwhm = calculate_fwhm(df_iter_subset2['Wavenumber'], df_iter_subset2['Corrected_Intensity_Voigt'])
+
+    extracted_features.append([
+        f'F{i + 1}',  
+        'Gaussian', 
+        max_intensity,
+        fwhm,
+        max_position
+    ])
+
+export_df = pd.DataFrame(extracted_features, columns=["Sample Index","Spectral Features", "Peak Intensity", "FWHM", "Peak Position"])
+
+output_file = 'raman_features.xlsx'
+with pd.ExcelWriter(output_file, engine='xlsxwriter') as writer:
+    export_df.to_excel(writer, sheet_name='Spectral_Features', index=False, startrow=0)
+    
+    workbook  = writer.book
+    worksheet = writer.sheets['Spectral_Features']
+
+import dash
+from dash import dcc, html
+import plotly.graph_objects as go
+import numpy as np
+import pandas as pd
+
+grid_size = 19
+
+intensity_matrix = np.zeros((grid_size, grid_size))
+wavenumber_matrix = np.zeros((grid_size, grid_size))
+
+for i in range(num_frames):
+    df_range = remove_cosmic_points(df.iloc[i * 1340:(i + 1) * 1340])
+    df_range = remove_cosmic_points(df_range)
+    df_range = remove_cosmic_points(df_range)
+
+    max_intensity = df_range['Intensity'].max()
+    max_wavenumber = df_range.loc[df_range['Intensity'].idxmax(), 'Wavenumber']
+
+    row = (i) // grid_size
+    col = (i) % grid_size
+    row = grid_size - row - 1
+    intensity_matrix[row, col] = max_intensity
+    wavenumber_matrix[row, col] = max_wavenumber
+
+app = dash.Dash(__name__)
+
+def plot_frame(frame_index):
+    row = grid_size - (frame_index // grid_size) - 1  
+    col = frame_index % grid_size
+    
+    df_frame = remove_cosmic_points(df.iloc[frame_index * 1340: (frame_index + 1) * 1340])
+    df_frame = remove_cosmic_points(df_frame)
+    df_frame = remove_cosmic_points(df_frame)
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df_frame['Wavenumber'],
+        y=df_frame['Intensity'],
+        mode='markers',
+        marker=dict(color='blue'),
+        name=f'Frame {frame_index + 1}'
+    ))
+    fig.update_layout(
+        title=f'Frame {frame_index + 1} - Intensity vs Wavenumber',
+        xaxis_title='Wavenumber',
+        yaxis_title='Intensity'
+    )
+    return fig
+
+app.layout = html.Div([ 
+    html.H1("Interactive Intensity Heatmap and Frame Viewer"),
+    
+    dcc.Graph(
+        id='heatmap-intensity',
+        figure=go.Figure(
+            data=[go.Heatmap(
+                z=intensity_matrix,
+                colorscale='Reds',
+                name='Intensity',
+                hovertemplate='Row: %{y}<br>Column: %{x}<br>Intensity: %{z}<br>Wavenumber: %{customdata}<br><extra></extra>',
+                customdata=wavenumber_matrix,  
+            )],
+            layout=go.Layout(
+                title='Heatmap of Maximum Intensity',
+                xaxis_title='Column Index',
+                yaxis_title='Row Index',
+            )
+        )
+    ),
+    
+    dcc.Graph(
+        id='frame-plot',
+    ),
+])
+
+@app.callback(
+    dash.dependencies.Output('frame-plot', 'figure'),
+    [dash.dependencies.Input('heatmap-intensity', 'clickData')]
+)
+def update_graph(clickData):
+    if clickData:
+        point = clickData['points'][0]
+        row = grid_size - point['y'] - 1
+        col = point['x']
+        frame_index = row * grid_size + col
+        return plot_frame(frame_index)
+    return {}
+
+if __name__ == '__main__':
+    app.run_server(debug=True)
